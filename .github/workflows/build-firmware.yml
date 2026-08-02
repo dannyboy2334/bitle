@@ -1,84 +1,61 @@
-name: Build Firmware
+name: Build and Deploy Web Flasher
 
 on:
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag (e.g. v1.0.0)'
-        required: true
-        default: 'v1.0.0'
+    branches: [ "main" ] # Runs every time you push to main
+  workflow_dispatch: # Adds a button to run it manually from the Actions tab
+
+# Grants permissions needed to deploy to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
+  build-and-deploy:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [esp32c3, esp32s3]
-
+    # Use the official ESP-IDF container (adjust release version if Bitle needs a specific one)
+    container: espressif/idf:release-v5.1 
+    
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: 'recursive' # Important if Bitle uses submodules
 
-      - name: Build firmware (${{ matrix.target }})
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v5.4.1
-          target: ${{ matrix.target }}
-          path: '.'
-          command: idf.py build
-
-      - name: Rename binaries for release
+      - name: Build ESP32-C3 Firmware
         run: |
-          cp build/bootloader/bootloader.bin bootloader-${{ matrix.target }}.bin
-          cp build/partition_table/partition-table.bin partition-table-${{ matrix.target }}.bin
-          cp build/bitle.bin bitle-${{ matrix.target }}.bin
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32c3
+          idf.py build
+          # Move binaries into a structure matching your manifest.json
+          mkdir -p web-flasher/c3
+          cp build/bootloader/bootloader.bin web-flasher/c3-bootloader.bin
+          cp build/partition_table/partition-table.bin web-flasher/c3-partition-table.bin
+          cp build/ota_data_initial.bin web-flasher/c3-ota_data_initial.bin
+          cp build/bitle.bin web-flasher/c3-bitle.bin
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Build ESP32-S3 Firmware
+        run: |
+          . /opt/esp/idf/export.sh
+          rm -rf build # Clean previous build
+          idf.py set-target esp32s3
+          idf.py build
+          mkdir -p web-flasher/s3
+          cp build/bootloader/bootloader.bin web-flasher/s3-bootloader.bin
+          cp build/partition_table/partition-table.bin web-flasher/s3-partition-table.bin
+          cp build/ota_data_initial.bin web-flasher/s3-ota_data_initial.bin
+          cp build/bitle.bin web-flasher/s3-bitle.bin
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: firmware-${{ matrix.target }}
-          path: |
-            bootloader-${{ matrix.target }}.bin
-            partition-table-${{ matrix.target }}.bin
-            bitle-${{ matrix.target }}.bin
+          # Uploads the web-flasher folder containing the HTML, JSON, and newly compiled BINs
+          path: './web-flasher' 
 
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all firmware artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: firmware
-          merge-multiple: true
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          name: Bitle Firmware ${{ github.ref_name || inputs.tag }}
-          body: |
-            ## Bitle Node Firmware
-
-            Pre-built binaries for flashing with the [Bitle Node Flasher](https://bitle-flasher.replit.app).
-
-            | Board | Description |
-            |-------|-------------|
-            | ESP32-C3 | BLE-only mesh relay node |
-            | ESP32-S3 | BLE + LoRa long-range backhaul |
-
-            ### Flashing
-            Use the Bitle Node Flasher to flash these binaries directly from your browser — no command-line tools needed.
-          files: firmware/*.bin
-          draft: false
-          prerelease: false
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
